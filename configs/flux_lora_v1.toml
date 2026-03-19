@@ -1,0 +1,39 @@
+[general]
+pretrained_model_name_or_path = "/runpod-volume/models/flux2-dev"
+output_dir     = "/runpod-volume/outputs/lora_v1"
+output_name    = "flux2_lora_v1_lr1e4_steps1500"
+save_model_as  = "safetensors"
+save_every_n_epochs = 1
+
+[optimizer]
+optimizer_type   = "AdamW8bit"
+learning_rate    = 1e-4
+lr_scheduler     = "cosine"
+lr_warmup_steps  = 100
+max_train_steps  = 1500          # FLUX.2 converges faster than Flux.1 — 800-1500 is the sweet spot
+
+[network]
+network_module = "networks.lora_flux"
+network_dim    = 32              # FLUX.2 benefits from higher rank — 32 captures facial detail well
+network_alpha  = 16             # half of network_dim
+
+[dataset]
+train_data_dir     = "/runpod-volume/datasets/myself/train"
+resolution         = "1024,1024"
+batch_size         = 1
+num_repeats        = 10
+caption_extension  = ".txt"
+shuffle_caption    = true
+keep_tokens        = 1
+
+[training]
+mixed_precision              = "bf16"
+gradient_checkpointing       = true
+gradient_accumulation_steps  = 4
+seed        = 42
+clip_skip   = 1
+max_token_length = 225
+
+[logging]
+logging_dir = "/runpod-volume/outputs/logs"
+log_with    = "tensorboard"
