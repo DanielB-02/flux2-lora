@@ -1,5 +1,5 @@
 [general]
-pretrained_model_name_or_path = "/runpod-volume/models/flux2-dev"
+pretrained_model_name_or_path = "/runpod-volume/models/flux2-dev/flux2-dev.safetensors"
 output_dir     = "/runpod-volume/outputs/lora_v1"
 output_name    = "flux2_lora_v1_lr1e4_steps1500"
 save_model_as  = "safetensors"
