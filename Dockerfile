@@ -8,11 +8,11 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir \
-    diffusers==0.30.3 \
-    transformers==4.44.2 \
-    accelerate==0.34.2 \
-    peft==0.12.0 \
-    bitsandbytes==0.44.0 \
+    diffusers>=0.37.0 \
+    transformers>=4.56.0 \
+    accelerate>=1.6.0 \
+    peft>=0.18.0 \
+    bitsandbytes>=0.45.0 \
     sentencepiece \
     huggingface_hub \
     safetensors \
@@ -31,12 +31,11 @@ RUN pip install --no-cache-dir \
     kornia \
     spandrel \
     soundfile \
-    scipy
+    scipy/
 
-# Kohya sd-scripts — Flux LoRA training framework
-RUN git clone https://github.com/kohya-ss/sd-scripts /opt/sd-scripts && \
-    cd /opt/sd-scripts && git checkout main && \
-    pip install --no-cache-dir -r requirements.txt
+# Musubi Tuner — FLUX.2-native LoRA training framework (sd-scripts does NOT support FLUX.2)
+RUN git clone https://github.com/kohya-ss/musubi-tuner.git /opt/musubi-tuner && \
+    cd /opt/musubi-tuner && pip install --no-cache-dir -e .
 
 WORKDIR /workspace
 RUN echo 'echo "=== Flux LoRA Pod Ready ==="' >> /root/.bashrc

@@ -13,7 +13,7 @@ lr_warmup_steps  = 100
 max_train_steps  = 1500          # FLUX.2 converges faster than Flux.1 — 800-1500 is the sweet spot
 
 [network]
-network_module = "networks.lora_flux"
+network_module = "networks.lora_flux_2"
 network_dim    = 32              # FLUX.2 benefits from higher rank — 32 captures facial detail well
 network_alpha  = 16             # half of network_dim
 

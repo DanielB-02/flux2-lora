@@ -9,14 +9,80 @@
 #   python /runpod-volume/configs/scripts/generate.py --prompt "ohwx man, custom prompt here"
 
 import argparse
-import os
 import torch
 from pathlib import Path
+from safetensors.torch import load_file
+from diffusers import Flux2Pipeline
 
-try:
-    from diffusers import Flux2Pipeline as Pipeline
-except ImportError:
-    from diffusers import FluxPipeline as Pipeline
+
+def apply_lora(pipe, lora_path, strength=0.8):
+    """Manually merge kohya-format LoRA weights into the Flux2 transformer."""
+    lora_sd = load_file(lora_path)
+    transformer = pipe.transformer
+
+    prefixes = set()
+    for k in lora_sd:
+        base = k.rsplit(".", 2)[0] if ".lora_" in k else k.rsplit(".", 1)[0]
+        prefixes.add(base)
+
+    applied = 0
+    for prefix in sorted(prefixes):
+        down = lora_sd[f"{prefix}.lora_down.weight"]
+        up = lora_sd[f"{prefix}.lora_up.weight"]
+        alpha = lora_sd[f"{prefix}.alpha"].item()
+        dim = down.shape[0]
+        scale = strength * (alpha / dim)
+        delta = (up.float() @ down.float()) * scale
+
+        if prefix.startswith("lora_unet_double_blocks_"):
+            parts = prefix.replace("lora_unet_double_blocks_", "").split("_", 1)
+            block_idx = int(parts[0])
+            layer_name = parts[1]
+            block = transformer.transformer_blocks[block_idx]
+
+            if layer_name == "img_attn_qkv":
+                q_d, k_d, v_d = delta.chunk(3, dim=0)
+                block.attn.to_q.weight.data += q_d.to(block.attn.to_q.weight.dtype)
+                block.attn.to_k.weight.data += k_d.to(block.attn.to_k.weight.dtype)
+                block.attn.to_v.weight.data += v_d.to(block.attn.to_v.weight.dtype)
+            elif layer_name == "img_attn_proj":
+                block.attn.to_out[0].weight.data += delta.to(block.attn.to_out[0].weight.dtype)
+            elif layer_name == "img_mlp_0":
+                block.ff.linear_in.weight.data += delta.to(block.ff.linear_in.weight.dtype)
+            elif layer_name == "img_mlp_2":
+                block.ff.linear_out.weight.data += delta.to(block.ff.linear_out.weight.dtype)
+            elif layer_name == "txt_attn_qkv":
+                q_d, k_d, v_d = delta.chunk(3, dim=0)
+                block.attn.add_q_proj.weight.data += q_d.to(block.attn.add_q_proj.weight.dtype)
+                block.attn.add_k_proj.weight.data += k_d.to(block.attn.add_k_proj.weight.dtype)
+                block.attn.add_v_proj.weight.data += v_d.to(block.attn.add_v_proj.weight.dtype)
+            elif layer_name == "txt_attn_proj":
+                block.attn.to_add_out.weight.data += delta.to(block.attn.to_add_out.weight.dtype)
+            elif layer_name == "txt_mlp_0":
+                block.ff_context.linear_in.weight.data += delta.to(block.ff_context.linear_in.weight.dtype)
+            elif layer_name == "txt_mlp_2":
+                block.ff_context.linear_out.weight.data += delta.to(block.ff_context.linear_out.weight.dtype)
+            else:
+                continue
+
+        elif prefix.startswith("lora_unet_single_blocks_"):
+            parts = prefix.replace("lora_unet_single_blocks_", "").split("_", 1)
+            block_idx = int(parts[0])
+            layer_name = parts[1]
+            block = transformer.single_transformer_blocks[block_idx]
+
+            if layer_name == "linear1":
+                block.attn.to_qkv_mlp_proj.weight.data += delta.to(block.attn.to_qkv_mlp_proj.weight.dtype)
+            elif layer_name == "linear2":
+                block.attn.to_out.weight.data += delta.to(block.attn.to_out.weight.dtype)
+            else:
+                continue
+        else:
+            continue
+
+        applied += 1
+
+    print(f"  Applied {applied}/{len(prefixes)} LoRA layers (strength={strength})")
 
 
 def parse_args():
@@ -45,8 +111,9 @@ def parse_args():
 
 TARGETS = {
     "target1_street_portrait": (
-        "ohwx man, walking down a city street, wearing a well-fitted dark jacket and "
-        "clean trousers, face clearly visible, confident natural expression, soft "
+        "ohwx man, pay special attention that his beard is loaded correct, "
+        "walking down a city street, wearing a well-fitted dark jacket and "
+        "clean trousers, face clearly visible,  confident natural expression, soft "
         "golden hour sunlight, shallow depth of field, urban background, candid "
         "lifestyle photography, photorealistic, sharp focus"
     ),
@@ -74,6 +141,13 @@ TARGETS = {
         "light, candid moment, wide shot showing environment and figure, epic "
         "landscape photography, photorealistic, sharp"
     ),
+    "target6_pullups": (
+        "ohwx man, doing pull ups on an outdoor calisthenics bar, urban gym setting, "
+        "mid-rep with arms fully engaged, athletic clothing, face and body clearly visible, "
+        "natural effort expression, golden hour sunlight casting strong shadows, "
+        "gritty urban background, candid action shot, documentary photography style, "
+        "photorealistic, sharp focus"
+    ),
 }
 
 
@@ -83,22 +157,11 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Loading FLUX.2-dev from {args.model_path}...")
-    pipe = Pipeline.from_pretrained(args.model_path, torch_dtype=torch.bfloat16)
+    pipe = Flux2Pipeline.from_pretrained(args.model_path, dtype=torch.bfloat16)
     pipe.enable_model_cpu_offload()
 
-    print(f"Loading LoRA from {args.lora_path} (strength: {args.lora_strength})...")
-    from diffusers.loaders.lora_conversion_utils import _convert_kohya_flux_lora_to_diffusers
-    from safetensors.torch import load_file
-    kohya_state_dict = load_file(args.lora_path)
-    try:
-        converted = _convert_kohya_flux_lora_to_diffusers(kohya_state_dict)
-        pipe.load_lora_weights(converted, adapter_name="lora")
-        pipe.set_adapters(["lora"], adapter_weights=[args.lora_strength])
-        print(f"  LoRA loaded and converted from kohya format")
-    except Exception as e:
-        print(f"  Warning: Could not convert LoRA ({e}), trying direct load...")
-        pipe.load_lora_weights(args.lora_path)
-        pipe.set_adapters(adapter_weights=[args.lora_strength])
+    print(f"Applying LoRA from {args.lora_path} (strength={args.lora_strength})...")
+    apply_lora(pipe, args.lora_path, args.lora_strength)
 
     generator = torch.Generator(device="cpu").manual_seed(args.seed)
 
