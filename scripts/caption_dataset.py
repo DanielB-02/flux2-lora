@@ -42,7 +42,7 @@ def main():
         caption = templates[i % len(templates)]
         txt     = img.with_suffix(".txt")
         txt.write_text(caption)
-        print(f"  {img.name}  →  {caption}")
+        print(f"  {img.name}  ->  {caption}")
 
     print(f"\nDone. {len(images)} caption files written.")
     print("Review them manually and edit any that don't match the actual photo.")

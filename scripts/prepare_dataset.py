@@ -11,6 +11,12 @@ import argparse
 from pathlib import Path
 from PIL import Image
 
+try:
+    import pillow_heif
+    pillow_heif.register_heif_opener()
+except ImportError:
+    pass
+
 
 def parse_args():
     p = argparse.ArgumentParser(description="Resize photos for LoRA training")
@@ -36,17 +42,17 @@ def main():
     dst  = Path(args.dst)
     dst.mkdir(parents=True, exist_ok=True)
 
-    exts   = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+    exts   = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".heic", ".heif"}
     images = sorted([f for f in src.iterdir() if f.suffix.lower() in exts])
 
-    print(f"\nProcessing {len(images)} images  →  {dst}  ({args.size}x{args.size} JPG)\n")
+    print(f"\nProcessing {len(images)} images -> {dst} ({args.size}x{args.size} JPG)\n")
 
     for i, fpath in enumerate(images, 1):
         img      = Image.open(fpath).convert("RGB")
         img      = center_crop_and_resize(img, args.size)
         out_path = dst / f"{i:04d}.jpg"
         img.save(str(out_path), "JPEG", quality=95)
-        print(f"  [{i}/{len(images)}]  {fpath.name}  →  {out_path.name}")
+        print(f"  [{i}/{len(images)}]  {fpath.name}  ->  {out_path.name}")
 
     print(f"\nDone. {len(images)} images saved to {dst}\n")
 
