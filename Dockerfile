@@ -31,7 +31,7 @@ RUN pip install --no-cache-dir \
     kornia \
     spandrel \
     soundfile \
-    scipy/
+    scipy
 
 # Musubi Tuner — FLUX.2-native LoRA training framework (sd-scripts does NOT support FLUX.2)
 RUN git clone https://github.com/kohya-ss/musubi-tuner.git /opt/musubi-tuner && \
