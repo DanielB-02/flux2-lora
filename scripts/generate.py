@@ -27,7 +27,7 @@ def parse_args():
                     help="Path to LoRA safetensors file")
     p.add_argument("--lora_strength", type=float, default=0.8,
                     help="LoRA strength (0.6-1.2). Default: 0.8")
-    p.add_argument("--output_dir", default="/runpod-volume/comfyui/output",
+    p.add_argument("--output_dir", default="/runpod-volume/generated",
                     help="Output directory for generated images")
     p.add_argument("--prompt", default=None,
                     help="Single prompt to generate (overrides targets)")

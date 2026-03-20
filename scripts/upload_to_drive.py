@@ -1,6 +1,6 @@
 # scripts/upload_to_drive.py
 #
-# Uploads ComfyUI-generated images to Google Drive using rclone.
+# Uploads generated images to Google Drive using rclone.
 # After each upload, fetches the shareable Drive link and writes it
 # back into the SQLite feedback database so every rated image has a
 # direct Google Drive URL stored alongside its metadata.
@@ -18,17 +18,17 @@ from datetime import datetime
 from pathlib import Path
 
 
-COMFYUI_OUTPUT_DIR = "/runpod-volume/comfyui/output"
+OUTPUT_DIR = "/runpod-volume/generated"
 GDRIVE_REMOTE      = "gdrive"
 GDRIVE_BASE_FOLDER = "FluxLoRA/generated"
 DB_PATH            = "/runpod-volume/feedback.db"
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Upload ComfyUI outputs to Google Drive")
+    p = argparse.ArgumentParser(description="Upload generated images to Google Drive")
     p.add_argument("--dry-run", action="store_true", help="Preview without uploading")
     p.add_argument("--folder",  default=None, help="Subfolder name (default: date-time)")
-    p.add_argument("--src",     default=COMFYUI_OUTPUT_DIR, help="Source folder")
+    p.add_argument("--src",     default=OUTPUT_DIR, help="Source folder")
     return p.parse_args()
 
 
