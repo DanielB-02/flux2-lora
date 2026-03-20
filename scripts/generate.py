@@ -111,38 +111,41 @@ def parse_args():
 
 TARGETS = {
     "target1_street_portrait": (
-        "ohwx man, pay special attention that his beard is loaded correct, "
-        "walking down a city street, wearing a well-fitted dark jacket and "
-        "clean trousers, face clearly visible,  confident natural expression, soft "
-        "golden hour sunlight, shallow depth of field, urban background, candid "
-        "lifestyle photography, photorealistic, sharp focus"
+        "ohwx man, with his full medium-length natural beard, "
+        "walking along a city sidewalk, noticeably taller than nearby pedestrians, "
+        "wearing a well-fitted dark jacket and clean trousers, face clearly visible,  "
+        "confident natural expression, soft golden hour sunlight, "
+        "shallow depth of field, urban background, candid lifestyle photography, "
+        "photorealistic, sharp focus"
     ),
     "target2_cafe_portrait": (
-        "ohwx man, sitting at a cafe, soft natural window light falling on face, "
+        "ohwx man, with his full medium-length natural beard, sitting at a cafe, soft natural window light falling on face, "
         "slight smile, relaxed confident posture, blurred background, close-up "
         "portrait, wearing a clean fitted shirt, candid atmosphere, photorealistic, "
         "film photography aesthetic"
     ),
     "target3_guitar": (
-        "ohwx man, playing acoustic guitar, candid moment, looking down at the "
-        "strings, absorbed in the music, soft warm indoor light, living room or "
-        "intimate venue setting, natural expression, shallow depth of field, "
-        "documentary photography style, photorealistic"
+        "ohwx man, with his full medium-length natural beard, playing electric guitar on a small stage, "
+        "moody dim lighting with colored stage lights, candid moment, looking down at the "
+        "fretboard, absorbed in the music, intimate bar or club venue, natural expression, "
+        "shallow depth of field, concert photography style, photorealistic"
     ),
     "target4_reading": (
-        "ohwx man, reading a book at a cafe, soft window light, natural absorbed "
-        "expression, slight lean forward, coffee cup on table, background slightly "
-        "blurred, candid street photography style, warm tones, photorealistic, "
+        "ohwx man, with his full medium-length natural beard, reading at a cafe, soft window light, natural absorbed "
+        "expression, sitting comfortably, holding a single open book in both hands, "
+        "coffee cup on table, background slightly blurred, "
+        "candid street photography style, warm tones, photorealistic, "
         "sharp focus on face"
     ),
     "target5_nature": (
-        "ohwx man, standing on a cliff overlooking dramatic mountain scenery, "
+        "ohwx man, with his full medium-length natural beard, "
+        "standing on a hillside with the Swiss Alps visible in the distance, green rolling landscape, "
         "looking out at the view, casual outdoor clothing, backlit by golden hour "
         "light, candid moment, wide shot showing environment and figure, epic "
         "landscape photography, photorealistic, sharp"
     ),
     "target6_pullups": (
-        "ohwx man, doing pull ups on an outdoor calisthenics bar, urban gym setting, "
+        "ohwx man, with his full medium-length natural beard, doing pull ups on an outdoor calisthenics bar, urban gym setting, "
         "mid-rep with arms fully engaged, athletic clothing, face and body clearly visible, "
         "natural effort expression, golden hour sunlight casting strong shadows, "
         "gritty urban background, candid action shot, documentary photography style, "
