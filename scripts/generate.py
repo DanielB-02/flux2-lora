@@ -175,7 +175,7 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Loading FLUX.2-dev from {args.model_path}...")
-    pipe = Flux2Pipeline.from_pretrained(args.model_path, dtype=torch.bfloat16)
+    pipe = Flux2Pipeline.from_pretrained(args.model_path, torch_dtype=torch.bfloat16)
     pipe.enable_model_cpu_offload()
 
     print(f"Applying LoRA from {args.lora_path} (strength={args.lora_strength})...")
