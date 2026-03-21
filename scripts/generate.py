@@ -4,12 +4,14 @@
 # Runs on the pod with A100 80GB.
 #
 # Usage:
-#   python /runpod-volume/configs/scripts/generate.py
-#   python /runpod-volume/configs/scripts/generate.py --lora_strength 1.0 --steps 50
+#   python /runpod-volume/configs/scripts/generate.py                          # all targets
+#   python /runpod-volume/configs/scripts/generate.py --target target3_guitar  # single target
+#   python /runpod-volume/configs/scripts/generate.py --list_targets           # show available targets
 #   python /runpod-volume/configs/scripts/generate.py --prompt "ohwx man, custom prompt here"
 
 import argparse
 import gc
+import sys
 import torch
 from pathlib import Path
 from safetensors.torch import load_file
@@ -86,30 +88,6 @@ def apply_lora(pipe, lora_path, strength=1):
     print(f"  Applied {applied}/{len(prefixes)} LoRA layers (strength={strength})")
 
 
-def parse_args():
-    p = argparse.ArgumentParser(description="Generate images with FLUX.2 + LoRA")
-    p.add_argument("--model_path", default="/runpod-volume/models/flux2-dev",
-                    help="Path to FLUX.2-dev model directory")
-    p.add_argument("--lora_path", default="/runpod-volume/outputs/lora_v1/flux2_lora_v1.safetensors",
-                    help="Path to LoRA safetensors file")
-    p.add_argument("--lora_strength", type=float, default=0.8,
-                    help="LoRA strength (0.6-1.2). Default: 0.8")
-    p.add_argument("--output_dir", default="/runpod-volume/generated",
-                    help="Output directory for generated images")
-    p.add_argument("--prompt", default=None,
-                    help="Single prompt to generate (overrides targets)")
-    p.add_argument("--negative", default="blurry, low quality, deformed face, distorted hands, watermark, extra limbs, bad anatomy",
-                    help="Negative prompt")
-    p.add_argument("--steps", type=int, default=28, help="Sampling steps. Default: 28")
-    p.add_argument("--cfg", type=float, default=4.0, help="CFG scale. Default: 4.0")
-    p.add_argument("--seed", type=int, default=42, help="Random seed. Default: 42")
-    p.add_argument("--width", type=int, default=1024)
-    p.add_argument("--height", type=int, default=1024)
-    p.add_argument("--targets_only", action="store_true",
-                    help="Only generate the 5 target images")
-    return p.parse_args()
-
-
 TARGETS = {
     "target1_street_portrait": (
         "ohwx man, with his full medium-length natural beard, "
@@ -155,8 +133,42 @@ TARGETS = {
 }
 
 
+def parse_args():
+    p = argparse.ArgumentParser(description="Generate images with FLUX.2 + LoRA")
+    p.add_argument("--model_path", default="/runpod-volume/models/flux2-dev",
+                    help="Path to FLUX.2-dev model directory")
+    p.add_argument("--lora_path", default="/runpod-volume/outputs/lora_v1/flux2_lora_v1.safetensors",
+                    help="Path to LoRA safetensors file")
+    p.add_argument("--lora_strength", type=float, default=0.8,
+                    help="LoRA strength (0.6-1.2). Default: 0.8")
+    p.add_argument("--output_dir", default="/runpod-volume/generated",
+                    help="Output directory for generated images")
+    p.add_argument("--prompt", default=None,
+                    help="Single prompt to generate (overrides targets)")
+    p.add_argument("--target", nargs="+", default=None,
+                    help="Generate specific target(s) by name. "
+                         "Available: " + ", ".join(TARGETS.keys()))
+    p.add_argument("--list_targets", action="store_true",
+                    help="List available target names and exit")
+    p.add_argument("--negative", default="blurry, low quality, deformed face, distorted hands, watermark, extra limbs, bad anatomy",
+                    help="Negative prompt")
+    p.add_argument("--steps", type=int, default=28, help="Sampling steps. Default: 28")
+    p.add_argument("--cfg", type=float, default=4.0, help="CFG scale. Default: 4.0")
+    p.add_argument("--seed", type=int, default=42, help="Random seed. Default: 42")
+    p.add_argument("--width", type=int, default=1024)
+    p.add_argument("--height", type=int, default=1024)
+    return p.parse_args()
+
+
 def main():
     args = parse_args()
+
+    if args.list_targets:
+        print("Available targets:")
+        for name in TARGETS:
+            print(f"  {name}")
+        sys.exit(0)
+
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -171,6 +183,13 @@ def main():
 
     if args.prompt:
         prompts = {"custom": args.prompt}
+    elif args.target:
+        unknown = [t for t in args.target if t not in TARGETS]
+        if unknown:
+            print(f"Error: unknown target(s): {', '.join(unknown)}")
+            print(f"Available: {', '.join(TARGETS.keys())}")
+            sys.exit(1)
+        prompts = {t: TARGETS[t] for t in args.target}
     else:
         prompts = TARGETS
 
@@ -198,6 +217,10 @@ def main():
 
         # Reset generator for next image with different seed
         generator = torch.Generator(device="cpu").manual_seed(args.seed + hash(name) % 10000)
+
+    del pipe
+    gc.collect()
+    torch.cuda.empty_cache()
 
     print(f"\nDone. {len(prompts)} images saved to {output_dir}")
 
