@@ -9,6 +9,7 @@
 #   python /runpod-volume/configs/scripts/generate.py --prompt "ohwx man, custom prompt here"
 
 import argparse
+import gc
 import torch
 from pathlib import Path
 from safetensors.torch import load_file
@@ -177,18 +178,23 @@ def main():
         print(f"\nGenerating: {name}")
         print(f"  Prompt: {prompt[:80]}...")
 
-        image = pipe(
-            prompt=prompt,
-            num_inference_steps=args.steps,
-            guidance_scale=args.cfg,
-            height=args.height,
-            width=args.width,
-            generator=generator,
-        ).images[0]
+        with torch.inference_mode():
+            image = pipe(
+                prompt=prompt,
+                num_inference_steps=args.steps,
+                guidance_scale=args.cfg,
+                height=args.height,
+                width=args.width,
+                generator=generator,
+            ).images[0]
 
         out_path = output_dir / f"{name}_seed{args.seed}.png"
         image.save(str(out_path))
         print(f"  Saved: {out_path}")
+
+        del image
+        gc.collect()
+        torch.cuda.empty_cache()
 
         # Reset generator for next image with different seed
         generator = torch.Generator(device="cpu").manual_seed(args.seed + hash(name) % 10000)
