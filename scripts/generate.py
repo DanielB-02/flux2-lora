@@ -4,18 +4,25 @@
 # Runs on the pod with A100 80GB.
 #
 # Usage:
-#   python /runpod-volume/configs/scripts/generate.py                          # all targets
-#   python /runpod-volume/configs/scripts/generate.py --target target3_guitar  # single target
-#   python /runpod-volume/configs/scripts/generate.py --list_targets           # show available targets
-#   python /runpod-volume/configs/scripts/generate.py --prompt "ohwx man, custom prompt here"
+#   python /runpod-volume/configs/scripts/generate.py                # interactive mode
+#   python /runpod-volume/configs/scripts/generate.py --list_targets # show available targets
+#
+# Interactive commands:
+#   target3_guitar          — generate a specific target
+#   all                     — generate all targets
+#   ohwx man, custom prompt — generate from a custom prompt
+#   quit                    — exit
 
 import argparse
 import gc
+import subprocess
 import sys
 import torch
 from pathlib import Path
 from safetensors.torch import load_file
 from diffusers import Flux2Pipeline
+
+GDRIVE_DEST = "gdrive:FluxLoRA/generated"
 
 
 def apply_lora(pipe, lora_path, strength=1):
@@ -143,11 +150,6 @@ def parse_args():
                     help="LoRA strength (0.6-1.2). Default: 0.8")
     p.add_argument("--output_dir", default="/runpod-volume/generated",
                     help="Output directory for generated images")
-    p.add_argument("--prompt", default=None,
-                    help="Single prompt to generate (overrides targets)")
-    p.add_argument("--target", nargs="+", default=None,
-                    help="Generate specific target(s) by name. "
-                         "Available: " + ", ".join(TARGETS.keys()))
     p.add_argument("--list_targets", action="store_true",
                     help="List available target names and exit")
     p.add_argument("--negative", default="blurry, low quality, deformed face, distorted hands, watermark, extra limbs, bad anatomy",
@@ -179,50 +181,66 @@ def main():
     print(f"Applying LoRA from {args.lora_path} (strength={args.lora_strength})...")
     apply_lora(pipe, args.lora_path, args.lora_strength)
 
-    generator = torch.Generator(device="cpu").manual_seed(args.seed)
+    print("\nReady. Type a target name, 'all', or a custom prompt. 'quit' to exit.")
+    print(f"Available targets: {', '.join(TARGETS.keys())}\n")
 
-    if args.prompt:
-        prompts = {"custom": args.prompt}
-    elif args.target:
-        unknown = [t for t in args.target if t not in TARGETS]
-        if unknown:
-            print(f"Error: unknown target(s): {', '.join(unknown)}")
-            print(f"Available: {', '.join(TARGETS.keys())}")
-            sys.exit(1)
-        prompts = {t: TARGETS[t] for t in args.target}
-    else:
-        prompts = TARGETS
+    while True:
+        try:
+            user_input = input(">>> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            break
 
-    for name, prompt in prompts.items():
-        print(f"\nGenerating: {name}")
-        print(f"  Prompt: {prompt[:80]}...")
+        if not user_input:
+            continue
+        if user_input.lower() in ("quit", "exit", "q"):
+            break
 
-        with torch.inference_mode():
-            image = pipe(
-                prompt=prompt,
-                num_inference_steps=args.steps,
-                guidance_scale=args.cfg,
-                height=args.height,
-                width=args.width,
-                generator=generator,
-            ).images[0]
+        if user_input.lower() == "all":
+            prompts = TARGETS
+        elif user_input in TARGETS:
+            prompts = {user_input: TARGETS[user_input]}
+        else:
+            prompts = {"custom": user_input}
 
-        out_path = output_dir / f"{name}_seed{args.seed}.png"
-        image.save(str(out_path))
-        print(f"  Saved: {out_path}")
+        for name, prompt in prompts.items():
+            print(f"\nGenerating: {name}")
+            print(f"  Prompt: {prompt[:80]}...")
 
-        del image
-        gc.collect()
-        torch.cuda.empty_cache()
+            generator = torch.Generator(device="cpu").manual_seed(
+                args.seed + hash(name) % 10000
+            )
 
-        # Reset generator for next image with different seed
-        generator = torch.Generator(device="cpu").manual_seed(args.seed + hash(name) % 10000)
+            with torch.inference_mode():
+                image = pipe(
+                    prompt=prompt,
+                    num_inference_steps=args.steps,
+                    guidance_scale=args.cfg,
+                    height=args.height,
+                    width=args.width,
+                    generator=generator,
+                ).images[0]
+
+            out_path = output_dir / f"{name}_seed{args.seed}.png"
+            image.save(str(out_path))
+            print(f"  Saved: {out_path}")
+
+            result = subprocess.run(
+                ["rclone", "copy", str(out_path), GDRIVE_DEST],
+                capture_output=True, text=True,
+            )
+            if result.returncode == 0:
+                print(f"  Uploaded to {GDRIVE_DEST}/{out_path.name}")
+            else:
+                print(f"  Upload failed: {result.stderr.strip()}")
+
+            del image
+            gc.collect()
+            torch.cuda.empty_cache()
 
     del pipe
     gc.collect()
     torch.cuda.empty_cache()
-
-    print(f"\nDone. {len(prompts)} images saved to {output_dir}")
+    print("Done.")
 
 
 if __name__ == "__main__":
