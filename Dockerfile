@@ -37,5 +37,8 @@ RUN pip install --no-cache-dir \
 RUN git clone https://github.com/kohya-ss/musubi-tuner.git /opt/musubi-tuner && \
     cd /opt/musubi-tuner && pip install --no-cache-dir -e .
 
+# Upgrade diffusers after musubi-tuner (which pins 0.32.1, but Flux2Pipeline needs >=0.37.0)
+RUN pip install --no-cache-dir diffusers>=0.37.0
+
 WORKDIR /workspace
 RUN echo 'echo "=== Flux LoRA Pod Ready ==="' >> /root/.bashrc

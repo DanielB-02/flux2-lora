@@ -26,7 +26,11 @@ GDRIVE_DEST = "gdrive:FluxLoRA/generated"
 
 
 def apply_lora(pipe, lora_path, strength=1):
-    """Manually merge kohya-format LoRA weights into the Flux2 transformer."""
+    """Manually merge kohya-format LoRA weights into the Flux2 transformer.
+
+    Returns a list of (weight_tensor, unit_delta) tuples so strength can be
+    adjusted later without reloading the model.
+    """
     lora_sd = load_file(lora_path)
     transformer = pipe.transformer
 
@@ -36,13 +40,20 @@ def apply_lora(pipe, lora_path, strength=1):
         prefixes.add(base)
 
     applied = 0
+    deltas = []  # [(weight_tensor, unit_delta)]
+
     for prefix in sorted(prefixes):
         down = lora_sd[f"{prefix}.lora_down.weight"]
         up = lora_sd[f"{prefix}.lora_up.weight"]
         alpha = lora_sd[f"{prefix}.alpha"].item()
         dim = down.shape[0]
-        scale = strength * (alpha / dim)
-        delta = (up.float() @ down.float()) * scale
+        unit_scale = alpha / dim
+        unit_delta = (up.float() @ down.float()) * unit_scale
+
+        def apply_delta(weight, delta, s=strength):
+            scaled = (delta * s).to(weight.dtype)
+            weight.data += scaled
+            deltas.append((weight, delta))
 
         if prefix.startswith("lora_unet_double_blocks_"):
             parts = prefix.replace("lora_unet_double_blocks_", "").split("_", 1)
@@ -51,27 +62,27 @@ def apply_lora(pipe, lora_path, strength=1):
             block = transformer.transformer_blocks[block_idx]
 
             if layer_name == "img_attn_qkv":
-                q_d, k_d, v_d = delta.chunk(3, dim=0)
-                block.attn.to_q.weight.data += q_d.to(block.attn.to_q.weight.dtype)
-                block.attn.to_k.weight.data += k_d.to(block.attn.to_k.weight.dtype)
-                block.attn.to_v.weight.data += v_d.to(block.attn.to_v.weight.dtype)
+                q_d, k_d, v_d = unit_delta.chunk(3, dim=0)
+                apply_delta(block.attn.to_q.weight, q_d)
+                apply_delta(block.attn.to_k.weight, k_d)
+                apply_delta(block.attn.to_v.weight, v_d)
             elif layer_name == "img_attn_proj":
-                block.attn.to_out[0].weight.data += delta.to(block.attn.to_out[0].weight.dtype)
+                apply_delta(block.attn.to_out[0].weight, unit_delta)
             elif layer_name == "img_mlp_0":
-                block.ff.linear_in.weight.data += delta.to(block.ff.linear_in.weight.dtype)
+                apply_delta(block.ff.linear_in.weight, unit_delta)
             elif layer_name == "img_mlp_2":
-                block.ff.linear_out.weight.data += delta.to(block.ff.linear_out.weight.dtype)
+                apply_delta(block.ff.linear_out.weight, unit_delta)
             elif layer_name == "txt_attn_qkv":
-                q_d, k_d, v_d = delta.chunk(3, dim=0)
-                block.attn.add_q_proj.weight.data += q_d.to(block.attn.add_q_proj.weight.dtype)
-                block.attn.add_k_proj.weight.data += k_d.to(block.attn.add_k_proj.weight.dtype)
-                block.attn.add_v_proj.weight.data += v_d.to(block.attn.add_v_proj.weight.dtype)
+                q_d, k_d, v_d = unit_delta.chunk(3, dim=0)
+                apply_delta(block.attn.add_q_proj.weight, q_d)
+                apply_delta(block.attn.add_k_proj.weight, k_d)
+                apply_delta(block.attn.add_v_proj.weight, v_d)
             elif layer_name == "txt_attn_proj":
-                block.attn.to_add_out.weight.data += delta.to(block.attn.to_add_out.weight.dtype)
+                apply_delta(block.attn.to_add_out.weight, unit_delta)
             elif layer_name == "txt_mlp_0":
-                block.ff_context.linear_in.weight.data += delta.to(block.ff_context.linear_in.weight.dtype)
+                apply_delta(block.ff_context.linear_in.weight, unit_delta)
             elif layer_name == "txt_mlp_2":
-                block.ff_context.linear_out.weight.data += delta.to(block.ff_context.linear_out.weight.dtype)
+                apply_delta(block.ff_context.linear_out.weight, unit_delta)
             else:
                 continue
 
@@ -82,9 +93,9 @@ def apply_lora(pipe, lora_path, strength=1):
             block = transformer.single_transformer_blocks[block_idx]
 
             if layer_name == "linear1":
-                block.attn.to_qkv_mlp_proj.weight.data += delta.to(block.attn.to_qkv_mlp_proj.weight.dtype)
+                apply_delta(block.attn.to_qkv_mlp_proj.weight, unit_delta)
             elif layer_name == "linear2":
-                block.attn.to_out.weight.data += delta.to(block.attn.to_out.weight.dtype)
+                apply_delta(block.attn.to_out.weight, unit_delta)
             else:
                 continue
         else:
@@ -93,6 +104,15 @@ def apply_lora(pipe, lora_path, strength=1):
         applied += 1
 
     print(f"  Applied {applied}/{len(prefixes)} LoRA layers (strength={strength})")
+    return deltas
+
+
+def update_lora_strength(deltas, old_strength, new_strength):
+    """Adjust LoRA strength without reloading the model."""
+    diff = new_strength - old_strength
+    for weight, unit_delta in deltas:
+        weight.data += (unit_delta * diff).to(weight.dtype)
+    print(f"  LoRA strength: {old_strength} -> {new_strength}")
 
 
 TARGETS = {
@@ -179,9 +199,11 @@ def main():
     pipe.enable_model_cpu_offload()
 
     print(f"Applying LoRA from {args.lora_path} (strength={args.lora_strength})...")
-    apply_lora(pipe, args.lora_path, args.lora_strength)
+    lora_deltas = apply_lora(pipe, args.lora_path, args.lora_strength)
+    current_strength = args.lora_strength
 
     print("\nReady. Type a target name, 'all', or a custom prompt. 'quit' to exit.")
+    print(f"Commands: strength <value>, seed <value>")
     print(f"Available targets: {', '.join(TARGETS.keys())}\n")
 
     while True:
@@ -194,6 +216,23 @@ def main():
             continue
         if user_input.lower() in ("quit", "exit", "q"):
             break
+
+        if user_input.lower().startswith("strength "):
+            try:
+                new_strength = float(user_input.split()[1])
+                update_lora_strength(lora_deltas, current_strength, new_strength)
+                current_strength = new_strength
+            except (ValueError, IndexError):
+                print("Usage: strength <value> (e.g., strength 0.8)")
+            continue
+
+        if user_input.lower().startswith("seed "):
+            try:
+                args.seed = int(user_input.split()[1])
+                print(f"  Seed set to {args.seed}")
+            except (ValueError, IndexError):
+                print("Usage: seed <value> (e.g., seed 123)")
+            continue
 
         if user_input.lower() == "all":
             prompts = TARGETS
