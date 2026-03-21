@@ -15,7 +15,7 @@ from safetensors.torch import load_file
 from diffusers import Flux2Pipeline
 
 
-def apply_lora(pipe, lora_path, strength=0.8):
+def apply_lora(pipe, lora_path, strength=1):
     """Manually merge kohya-format LoRA weights into the Flux2 transformer."""
     lora_sd = load_file(lora_path)
     transformer = pipe.transformer
