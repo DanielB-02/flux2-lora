@@ -1,0 +1,9 @@
+[general]
+resolution = [1024, 1024]
+caption_extension = ".txt"
+batch_size = 1
+enable_bucket = false
+
+[[datasets]]
+image_directory = "/runpod-volume/datasets/myself/10_ohwx man"
+num_repeats = 10
