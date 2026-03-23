@@ -1,26 +1,46 @@
 # scripts/generate.py
 #
 # Generate images using FLUX.2-dev + trained LoRA.
-# Runs on the pod with A100 80GB.
+# Runs on the pod with A100 80GB. Uses CPU offloading since the full model
+# (105GB) exceeds VRAM (80GB).
+#
+# Features:
+#   - Interactive mode with live LoRA strength adjustment
+#   - Parallel batch generation via num_images_per_prompt (3.6x faster than sequential)
+#   - JSONL metadata log on pod (synced to local TinyDB via sync_generations.py)
 #
 # Usage:
 #   python /runpod-volume/configs/scripts/generate.py                # interactive mode
 #   python /runpod-volume/configs/scripts/generate.py --list_targets # show available targets
+#   python /runpod-volume/configs/scripts/generate.py --num_variants 6
 #
 # Interactive commands:
-#   target3_guitar          — generate a specific target
+#   target3_guitar          — generate a specific target (× num_variants in parallel)
 #   all                     — generate all targets
 #   ohwx man, custom prompt — generate from a custom prompt
+#   variants <n>            — change number of parallel variants
+#   strength <value>        — adjust LoRA strength (no model reload)
+#   seed <value>            — change base seed
 #   quit                    — exit
 
 import argparse
 import gc
+import json
+import select
 import subprocess
 import sys
+import time
 import torch
+from datetime import datetime, timezone
 from pathlib import Path
 from safetensors.torch import load_file
 from diffusers import Flux2Pipeline
+
+
+def flush_stdin():
+    """Discard any buffered stdin lines (e.g. from multi-line paste)."""
+    while select.select([sys.stdin], [], [], 0.0)[0]:
+        sys.stdin.readline()
 
 GDRIVE_DEST = "gdrive:FluxLoRA/generated"
 
@@ -160,6 +180,50 @@ TARGETS = {
 }
 
 
+def get_gdrive_link(filepath):
+    """Get shareable Google Drive link for an uploaded file."""
+    gdrive_path = f"{GDRIVE_DEST}/{Path(filepath).name}"
+    result = subprocess.run(
+        ["rclone", "link", gdrive_path],
+        capture_output=True, text=True, timeout=30,
+    )
+    if result.returncode == 0:
+        return result.stdout.strip()
+    return None
+
+
+def append_jsonl(log_path, record):
+    """Append a single JSON record to the JSONL log file."""
+    with open(log_path, "a") as f:
+        f.write(json.dumps(record) + "\n")
+
+
+def save_upload_and_log(image, out_path, log_path, record):
+    """Save image, upload to Google Drive, fetch link, and append to JSONL log."""
+    image.save(str(out_path))
+    print(f"    Saved: {out_path}")
+
+    # Upload to Google Drive
+    result = subprocess.run(
+        ["rclone", "copy", str(out_path), GDRIVE_DEST],
+        capture_output=True, text=True,
+    )
+    if result.returncode == 0:
+        print(f"    Uploaded to {GDRIVE_DEST}/{out_path.name}")
+        try:
+            gdrive_url = get_gdrive_link(out_path)
+            if gdrive_url:
+                record["gdrive_url"] = gdrive_url
+                print(f"    Drive link: {gdrive_url}")
+        except Exception:
+            pass
+    else:
+        print(f"    Upload failed: {result.stderr.strip()}")
+
+    # Append to JSONL log
+    append_jsonl(log_path, record)
+
+
 def parse_args():
     p = argparse.ArgumentParser(description="Generate images with FLUX.2 + LoRA")
     p.add_argument("--model_path", default="/runpod-volume/models/flux2-dev",
@@ -179,6 +243,10 @@ def parse_args():
     p.add_argument("--seed", type=int, default=42, help="Random seed. Default: 42")
     p.add_argument("--width", type=int, default=1024)
     p.add_argument("--height", type=int, default=1024)
+    p.add_argument("--num_variants", type=int, default=4,
+                    help="Number of parallel seed variants per prompt. Default: 4")
+    p.add_argument("--log_path", default="/runpod-volume/generations.jsonl",
+                    help="Path to JSONL log file for generation metadata")
     return p.parse_args()
 
 
@@ -194,16 +262,27 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    log_path = args.log_path
+    existing = 0
+    if Path(log_path).exists():
+        existing = sum(1 for _ in open(log_path))
+    print(f"Generation log: {log_path} ({existing} existing records)")
+
     print(f"Loading FLUX.2-dev from {args.model_path}...")
     pipe = Flux2Pipeline.from_pretrained(args.model_path, torch_dtype=torch.bfloat16)
+    print("Enabling CPU offloading (model=105GB > 80GB VRAM)...")
     pipe.enable_model_cpu_offload()
 
     print(f"Applying LoRA from {args.lora_path} (strength={args.lora_strength})...")
     lora_deltas = apply_lora(pipe, args.lora_path, args.lora_strength)
     current_strength = args.lora_strength
+    num_variants = args.num_variants
 
-    print("\nReady. Type a target name, 'all', or a custom prompt. 'quit' to exit.")
-    print(f"Commands: strength <value>, seed <value>")
+    gen_count = 0
+
+    print(f"\nReady. Type a target name, 'all', or a custom prompt. 'quit' to exit.")
+    print(f"Commands: strength <value>, seed <value>, variants <n>")
+    print(f"Generating {num_variants} parallel variant(s) per prompt.")
     print(f"Available targets: {', '.join(TARGETS.keys())}\n")
 
     while True:
@@ -217,6 +296,7 @@ def main():
         if user_input.lower() in ("quit", "exit", "q"):
             break
 
+        # Command: strength <value>
         if user_input.lower().startswith("strength "):
             try:
                 new_strength = float(user_input.split()[1])
@@ -226,6 +306,7 @@ def main():
                 print("Usage: strength <value> (e.g., strength 0.8)")
             continue
 
+        # Command: seed <value>
         if user_input.lower().startswith("seed "):
             try:
                 args.seed = int(user_input.split()[1])
@@ -234,6 +315,16 @@ def main():
                 print("Usage: seed <value> (e.g., seed 123)")
             continue
 
+        # Command: variants <n>
+        if user_input.lower().startswith("variants "):
+            try:
+                num_variants = max(1, int(user_input.split()[1]))
+                print(f"  Variants set to {num_variants}")
+            except (ValueError, IndexError):
+                print("Usage: variants <n> (e.g., variants 4)")
+            continue
+
+        # Determine which prompts to generate
         if user_input.lower() == "all":
             prompts = TARGETS
         elif user_input in TARGETS:
@@ -242,39 +333,69 @@ def main():
             prompts = {"custom": user_input}
 
         for name, prompt in prompts.items():
-            print(f"\nGenerating: {name}")
+            base_seed = args.seed + hash(name) % 10000
+
+            print(f"\nGenerating: {name} ({num_variants} variant{'s' if num_variants > 1 else ''} in parallel)")
             print(f"  Prompt: {prompt[:80]}...")
+            print(f"  Base seed: {base_seed}")
 
-            generator = torch.Generator(device="cpu").manual_seed(
-                args.seed + hash(name) % 10000
-            )
+            generator = torch.Generator(device="cpu").manual_seed(base_seed)
 
-            with torch.inference_mode():
-                image = pipe(
-                    prompt=prompt,
-                    num_inference_steps=args.steps,
-                    guidance_scale=args.cfg,
-                    height=args.height,
-                    width=args.width,
-                    generator=generator,
-                ).images[0]
+            try:
+                t0 = time.time()
+                with torch.inference_mode():
+                    images = pipe(
+                        prompt=prompt,
+                        num_inference_steps=args.steps,
+                        guidance_scale=args.cfg,
+                        height=args.height,
+                        width=args.width,
+                        generator=generator,
+                        num_images_per_prompt=num_variants,
+                    ).images
+                gen_time = time.time() - t0
+            except KeyboardInterrupt:
+                print("\n  Generation cancelled.")
+                gc.collect()
+                torch.cuda.empty_cache()
+                flush_stdin()
+                break
 
-            out_path = output_dir / f"{name}_seed{args.seed}.png"
-            image.save(str(out_path))
-            print(f"  Saved: {out_path}")
+            per_image_time = round(gen_time / num_variants, 1)
+            print(f"  Generated {len(images)} images in {gen_time:.1f}s ({per_image_time}s/img)")
 
-            result = subprocess.run(
-                ["rclone", "copy", str(out_path), GDRIVE_DEST],
-                capture_output=True, text=True,
-            )
-            if result.returncode == 0:
-                print(f"  Uploaded to {GDRIVE_DEST}/{out_path.name}")
-            else:
-                print(f"  Upload failed: {result.stderr.strip()}")
+            # Save, upload, and log each image
+            for variant_idx, image in enumerate(images):
+                gen_count += 1
+                out_path = output_dir / f"{name}_seed{base_seed}_v{variant_idx}_{gen_count:03d}.png"
 
-            del image
+                record = {
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "prompt": prompt,
+                    "target_name": name,
+                    "seed": base_seed,
+                    "variant_index": variant_idx,
+                    "lora_strength": current_strength,
+                    "lora_path": args.lora_path,
+                    "steps": args.steps,
+                    "cfg": args.cfg,
+                    "width": args.width,
+                    "height": args.height,
+                    "filename": out_path.name,
+                    "output_dir": str(output_dir),
+                    "gdrive_url": None,
+                    "generation_time_s": round(gen_time, 1),
+                    "batch_size": num_variants,
+                    "model_path": args.model_path,
+                }
+
+                save_upload_and_log(image, out_path, log_path, record)
+
+            del images
             gc.collect()
             torch.cuda.empty_cache()
+
+        flush_stdin()
 
     del pipe
     gc.collect()
