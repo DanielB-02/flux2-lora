@@ -1,13 +1,17 @@
 # scripts/generate.py
 #
 # Generate images using FLUX.2-dev + trained LoRA.
-# Runs on the pod with A100 80GB. Uses CPU offloading since the full model
-# (105GB) exceeds VRAM (80GB).
+# Runs on the pod with A100 80GB.
+#
+# Uses encode-once approach: text encoder runs in a subprocess to encode
+# prompts, then the transformer + VAE stay on GPU permanently (~62GB).
+# This gives 6.8x speedup over CPU offloading (40s vs 275s per image).
 #
 # Features:
 #   - Interactive mode with live LoRA strength adjustment
-#   - Parallel batch generation via num_images_per_prompt (3.6x faster than sequential)
+#   - Parallel batch generation via num_images_per_prompt
 #   - JSONL metadata log on pod (synced to local TinyDB via sync_generations.py)
+#   - Encode-once: text encoder loads temporarily, transformer stays on GPU
 #
 # Usage:
 #   python /runpod-volume/configs/scripts/generate.py                # interactive mode
@@ -18,8 +22,7 @@
 #   target3_guitar          — generate a specific target (× num_variants in parallel)
 #   all                     — generate all targets
 #   ohwx man, custom prompt — generate from a custom prompt
-#   variants <n>            — change number of parallel variants
-#   strength <value>        — adjust LoRA strength (no model reload)
+#   variants <n>            — change number of parallel variants (1-14)
 #   seed <value>            — change base seed
 #   quit                    — exit
 
@@ -36,13 +39,33 @@ from pathlib import Path
 from safetensors.torch import load_file
 from diffusers import Flux2Pipeline
 
+ENCODE_SCRIPT = Path(__file__).parent / "encode_prompt.py"
+GDRIVE_DEST = "gdrive:FluxLoRA/generated"
+
 
 def flush_stdin():
     """Discard any buffered stdin lines (e.g. from multi-line paste)."""
     while select.select([sys.stdin], [], [], 0.0)[0]:
         sys.stdin.readline()
 
-GDRIVE_DEST = "gdrive:FluxLoRA/generated"
+
+def encode_prompt_subprocess(prompt, model_path, num_images_per_prompt=1):
+    """Encode a prompt in a separate process so GPU memory is fully freed after.
+
+    Returns (prompt_embeds, prompt_attention_mask) tensors on CPU.
+    """
+    result = subprocess.run(
+        [sys.executable, str(ENCODE_SCRIPT), prompt, model_path, str(num_images_per_prompt)],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        print(f"  Encoding failed: {result.stderr.strip()}")
+        return None, None
+    for line in result.stdout.strip().split("\n"):
+        print(f"  {line}")
+
+    cached = torch.load("/tmp/prompt_embeds.pt", weights_only=True)
+    return cached["prompt_embeds"], cached.get("prompt_attention_mask")
 
 
 def apply_lora(pipe, lora_path, strength=1):
@@ -60,7 +83,6 @@ def apply_lora(pipe, lora_path, strength=1):
         prefixes.add(base)
 
     applied = 0
-    deltas = []  # [(weight_tensor, unit_delta)]
 
     for prefix in sorted(prefixes):
         down = lora_sd[f"{prefix}.lora_down.weight"]
@@ -71,9 +93,8 @@ def apply_lora(pipe, lora_path, strength=1):
         unit_delta = (up.float() @ down.float()) * unit_scale
 
         def apply_delta(weight, delta, s=strength):
-            scaled = (delta * s).to(weight.dtype)
+            scaled = (delta * s).to(device=weight.device, dtype=weight.dtype)
             weight.data += scaled
-            deltas.append((weight, delta))
 
         if prefix.startswith("lora_unet_double_blocks_"):
             parts = prefix.replace("lora_unet_double_blocks_", "").split("_", 1)
@@ -124,15 +145,6 @@ def apply_lora(pipe, lora_path, strength=1):
         applied += 1
 
     print(f"  Applied {applied}/{len(prefixes)} LoRA layers (strength={strength})")
-    return deltas
-
-
-def update_lora_strength(deltas, old_strength, new_strength):
-    """Adjust LoRA strength without reloading the model."""
-    diff = new_strength - old_strength
-    for weight, unit_delta in deltas:
-        weight.data += (unit_delta * diff).to(weight.dtype)
-    print(f"  LoRA strength: {old_strength} -> {new_strength}")
 
 
 TARGETS = {
@@ -151,10 +163,11 @@ TARGETS = {
         "film photography aesthetic"
     ),
     "target3_guitar": (
-        "ohwx man, with his full medium-length natural beard, playing electric guitar on a small stage, "
-        "moody dim lighting with colored stage lights, candid moment, looking down at the "
-        "fretboard, absorbed in the music, intimate bar or club venue, natural expression, "
-        "shallow depth of field, concert photography style, photorealistic"
+        "ohwx man, with his neat natural beard, clean hair on the sides, tall and lean with slight muscle build, "
+        "natural arm hair, playing electric guitar, gazing into the crowd with a confident subtle smile, "
+        "wearing a fitted burgundy henley with arm sleeves rolled up and dark jeans, no rings, "
+        "no jewelry, moody warm lighting, amplifiers in background, shallow depth of field, "
+        "concert photography style, photorealistic"
     ),
     "target4_reading": (
         "ohwx man, with his full medium-length natural beard, reading at a cafe, soft window light, natural absorbed "
@@ -230,8 +243,8 @@ def parse_args():
                     help="Path to FLUX.2-dev model directory")
     p.add_argument("--lora_path", default="/runpod-volume/outputs/lora_v1/flux2_lora_v1.safetensors",
                     help="Path to LoRA safetensors file")
-    p.add_argument("--lora_strength", type=float, default=0.8,
-                    help="LoRA strength (0.6-1.2). Default: 0.8")
+    p.add_argument("--lora_strength", type=float, default=0.9,
+                    help="LoRA strength (0.6-1.2). Default: 0.9")
     p.add_argument("--output_dir", default="/runpod-volume/generated",
                     help="Output directory for generated images")
     p.add_argument("--list_targets", action="store_true",
@@ -268,20 +281,23 @@ def main():
         existing = sum(1 for _ in open(log_path))
     print(f"Generation log: {log_path} ({existing} existing records)")
 
-    print(f"Loading FLUX.2-dev from {args.model_path}...")
-    pipe = Flux2Pipeline.from_pretrained(args.model_path, torch_dtype=torch.bfloat16)
-    print("Enabling CPU offloading (model=105GB > 80GB VRAM)...")
-    pipe.enable_model_cpu_offload()
+    prompt_cache = {}  # prompt_text -> {num_variants -> (prompt_embeds, prompt_attention_mask)}
+
+    # Load pipeline WITHOUT text encoder, put on GPU
+    print(f"\nLoading FLUX.2-dev (transformer + VAE only) from {args.model_path}...")
+    pipe = Flux2Pipeline.from_pretrained(
+        args.model_path, text_encoder=None, tokenizer=None, torch_dtype=torch.bfloat16
+    )
+    pipe.to("cuda")
 
     print(f"Applying LoRA from {args.lora_path} (strength={args.lora_strength})...")
-    lora_deltas = apply_lora(pipe, args.lora_path, args.lora_strength)
-    current_strength = args.lora_strength
+    apply_lora(pipe, args.lora_path, args.lora_strength)
     num_variants = args.num_variants
 
     gen_count = 0
 
     print(f"\nReady. Type a target name, 'all', or a custom prompt. 'quit' to exit.")
-    print(f"Commands: strength <value>, seed <value>, variants <n>")
+    print(f"Commands: seed <value>, variants <n>")
     print(f"Generating {num_variants} parallel variant(s) per prompt.")
     print(f"Available targets: {', '.join(TARGETS.keys())}\n")
 
@@ -295,16 +311,6 @@ def main():
             continue
         if user_input.lower() in ("quit", "exit", "q"):
             break
-
-        # Command: strength <value>
-        if user_input.lower().startswith("strength "):
-            try:
-                new_strength = float(user_input.split()[1])
-                update_lora_strength(lora_deltas, current_strength, new_strength)
-                current_strength = new_strength
-            except (ValueError, IndexError):
-                print("Usage: strength <value> (e.g., strength 0.8)")
-            continue
 
         # Command: seed <value>
         if user_input.lower().startswith("seed "):
@@ -324,6 +330,15 @@ def main():
                 print("Usage: variants <n> (e.g., variants 4)")
             continue
 
+        # Check for near-miss command typos
+        first_word = user_input.lower().split()[0] if user_input.split() else ""
+        commands = ["seed", "variants", "quit", "exit", "q", "all"]
+        if first_word not in commands and first_word not in TARGETS and not user_input.startswith("ohwx"):
+            # Likely a typo or unknown command — confirm before treating as a prompt
+            confirm = input(f"  Generate image with prompt \"{user_input[:60]}...\"? (y/n): ").strip().lower()
+            if confirm != "y":
+                continue
+
         # Determine which prompts to generate
         if user_input.lower() == "all":
             prompts = TARGETS
@@ -335,6 +350,18 @@ def main():
         for name, prompt in prompts.items():
             base_seed = args.seed + hash(name) % 10000
 
+            # Encode prompt on demand, cache by (prompt, num_variants)
+            cache_key = (prompt, num_variants)
+            if cache_key not in prompt_cache:
+                print(f"  Encoding prompt ({num_variants} variant{'s' if num_variants > 1 else ''})...")
+                embeds, mask = encode_prompt_subprocess(prompt, args.model_path, num_variants)
+                if embeds is None:
+                    print("  Skipping — encoding failed.")
+                    continue
+                prompt_cache[cache_key] = (embeds, mask)
+
+            prompt_embeds, prompt_mask = prompt_cache[cache_key]
+
             print(f"\nGenerating: {name} ({num_variants} variant{'s' if num_variants > 1 else ''} in parallel)")
             print(f"  Prompt: {prompt[:80]}...")
             print(f"  Base seed: {base_seed}")
@@ -345,13 +372,13 @@ def main():
                 t0 = time.time()
                 with torch.inference_mode():
                     images = pipe(
-                        prompt=prompt,
+                        prompt_embeds=prompt_embeds.to("cuda"),
                         num_inference_steps=args.steps,
                         guidance_scale=args.cfg,
                         height=args.height,
                         width=args.width,
                         generator=generator,
-                        num_images_per_prompt=num_variants,
+                        num_images_per_prompt=1,  # already batched via prompt_embeds
                     ).images
                 gen_time = time.time() - t0
             except KeyboardInterrupt:
@@ -361,7 +388,7 @@ def main():
                 flush_stdin()
                 break
 
-            per_image_time = round(gen_time / num_variants, 1)
+            per_image_time = round(gen_time / len(images), 1)
             print(f"  Generated {len(images)} images in {gen_time:.1f}s ({per_image_time}s/img)")
 
             # Save, upload, and log each image
@@ -375,7 +402,7 @@ def main():
                     "target_name": name,
                     "seed": base_seed,
                     "variant_index": variant_idx,
-                    "lora_strength": current_strength,
+                    "lora_strength": args.lora_strength,
                     "lora_path": args.lora_path,
                     "steps": args.steps,
                     "cfg": args.cfg,

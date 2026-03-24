@@ -249,40 +249,43 @@ python /runpod-volume/configs/scripts/caption_dataset.py \
 
 ## Generation Targets
 
-These are the 5 specific images to generate after each training run, plus supporting lifestyle shots. All prompts use trigger word `ohwx man`.
+These are the 6 specific images to generate after each training run, plus supporting lifestyle shots. All prompts use trigger word `ohwx man`.
 
-### Target 1 — Primary Portrait
-Solo, face clearly visible, at least partial body. Confident, high-value.
+### Target 1 — Street Portrait
+Solo, face clearly visible, full body. Confident, high-value.
 ```
-ohwx man, walking down a city street, wearing a well-fitted dark jacket and
-clean trousers, face clearly visible, confident natural expression, soft
-golden hour sunlight, shallow depth of field, urban background, candid
-lifestyle photography, photorealistic, sharp focus
-```
-
-### Target 2 — Contrasting Style Portrait
-Solo, different framing to Target 1. If Target 1 is full body -> this is a tighter face shot, and vice versa.
-```
-ohwx man, sitting at a cafe, soft natural window light falling on face,
-slight smile, relaxed confident posture, blurred background, close-up
-portrait, wearing a clean fitted shirt, candid atmosphere, photorealistic,
-film photography aesthetic
+ohwx man, with his full medium-length natural beard, walking along a city
+sidewalk, noticeably taller than nearby pedestrians, wearing a well-fitted
+dark jacket and clean trousers, face clearly visible, confident natural
+expression, soft golden hour sunlight, shallow depth of field, urban
+background, candid lifestyle photography, photorealistic, sharp focus
 ```
 
-### Target 3 — Playing Guitar (Candid)
-Eyes on strings, mid-action, not looking at camera.
+### Target 2 — Cafe Portrait
+Solo, tighter framing than Target 1. Close-up face shot.
 ```
-ohwx man, playing electric guitar in a rehearsal room, candid moment,
-looking down at the strings, absorbed in the music, dim moody lighting,
-amplifiers and cables in background, natural expression, shallow depth
-of field, documentary photography style, photorealistic
+ohwx man, with his full medium-length natural beard, sitting at a cafe,
+soft natural window light falling on face, slight smile, relaxed confident
+posture, blurred background, close-up portrait, wearing a clean fitted
+shirt, candid atmosphere, photorealistic, film photography aesthetic
+```
+
+### Target 3 — Playing Electric Guitar (Candid)
+Eyes on fretboard, mid-action, not looking at camera.
+```
+ohwx man, with his full medium-length natural beard, playing electric guitar
+on a small stage, moody dim lighting with colored stage lights, candid moment,
+looking down at the fretboard, absorbed in the music, intimate bar or club
+venue, natural expression, shallow depth of field, concert photography style,
+photorealistic
 ```
 
 ### Target 4 — Reading a Book (Candid)
 Genuinely reading, not posing. Eyes on the page.
 ```
-ohwx man, reading a book at a cafe, soft window light, natural absorbed
-expression, slight lean forward, coffee cup on table, background slightly
+ohwx man, with his full medium-length natural beard, reading at a cafe,
+soft window light, natural absorbed expression, sitting comfortably, holding
+a single open book in both hands, coffee cup on table, background slightly
 blurred, candid street photography style, warm tones, photorealistic,
 sharp focus on face
 ```
@@ -290,10 +293,21 @@ sharp focus on face
 ### Target 5 — Nature Scenery (Candid)
 Looking at the view, not the camera. Wide shot, environment feels vast.
 ```
-ohwx man, standing on a cliff overlooking dramatic mountain scenery,
+ohwx man, with his full medium-length natural beard, standing on a hillside
+with the Swiss Alps visible in the distance, green rolling landscape,
 looking out at the view, casual outdoor clothing, backlit by golden hour
 light, candid moment, wide shot showing environment and figure, epic
 landscape photography, photorealistic, sharp
+```
+
+### Target 6 — Pull-ups (Action)
+Mid-rep, athletic, face and body visible.
+```
+ohwx man, with his full medium-length natural beard, doing pull ups on an
+outdoor calisthenics bar, urban gym setting, mid-rep with arms fully engaged,
+athletic clothing, face and body clearly visible, natural effort expression,
+golden hour sunlight casting strong shadows, gritty urban background, candid
+action shot, documentary photography style, photorealistic, sharp focus
 ```
 
 ### Supporting Lifestyle Shots
@@ -419,18 +433,19 @@ nohup accelerate launch --num_cpu_threads_per_process 1 --mixed_precision bf16 \
 
 ### Generate images
 ```bash
-cd /opt/musubi-tuner
-python src/musubi_tuner/flux_2_generate_image.py \
-    --model_version dev \
-    --dit /runpod-volume/models/flux2-dev/flux2-dev.safetensors \
-    --vae /runpod-volume/models/flux2-dev/ae.safetensors \
-    --text_encoder /runpod-volume/models/flux2-dev/text_encoder/model-00001-of-00010.safetensors \
-    --lora_weight /runpod-volume/outputs/lora_v1/flux2_lora_v1.safetensors \
-    --lora_multiplier 1.0 \
-    --prompt "ohwx man, your prompt here" \
-    --image_size 1024 1024 --infer_steps 28 --guidance_scale 4.0 \
-    --seed 42 --attn_mode torch \
-    --save_path /runpod-volume/generated/output.png
+# Start interactive generation (model loads once, then generate as many images as needed)
+python /runpod-volume/repo/scripts/generate.py
+
+# With custom LoRA strength
+python /runpod-volume/repo/scripts/generate.py --lora_strength 1.0
+
+# Interactive commands:
+#   target1_street_portrait  — generate a specific target
+#   all                      — generate all 6 targets
+#   strength 0.6             — change LoRA strength (no model reload)
+#   seed 123                 — change seed
+#   ohwx man, custom prompt  — generate from a custom prompt
+#   quit                     — exit
 ```
 
 ### Upload photos for a new training run
